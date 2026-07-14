@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Capsa Banting — Big Two</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="toast" class="toast hidden"></div>
+
+  <div class="topbar">
+    <button id="btn-guide" class="mini" title="How to play">❓ Guide</button>
+    <button id="btn-sound" class="mini" title="Toggle sound">🔊</button>
+    <button id="btn-quit" class="mini danger hidden" title="Quit this game">🚪 Quit</button>
+  </div>
+
+  <!-- How-to-play guide -->
+  <div id="guide" class="modal-backdrop hidden">
+    <div class="modal guide-modal">
+      <h2>How to Play <span class="guide-sub">Capsa Banting · Big Two</span></h2>
+
+      <div class="guide-facts">
+        <div class="fact"><span class="fact-icon">🎯</span>
+          <div><b>Goal</b><span>Be the first to play all 13 of your cards.</span></div></div>
+        <div class="fact"><span class="fact-icon">🃏</span>
+          <div><b>Your turn</b><span>Beat the pile with the <em>same number of cards</em> — or pass. When everyone else passes, the last player to play leads anything.</span></div></div>
+        <div class="fact"><span class="fact-icon">🥇</span>
+          <div><b>First move</b><span>The very first play must include the lowest dealt card.</span></div></div>
+        <div class="fact"><span class="fact-icon">⏱️</span>
+          <div><b>Timer</b><span>30 seconds per turn — then you auto-pass, or auto-play your lowest card when leading.</span></div></div>
+      </div>
+
+      <h3>Card ranking</h3>
+      <div id="guide-ranks" class="rank-strip"></div>
+      <div class="suit-row">Suits break ties: <span id="guide-suits"></span></div>
+
+      <h3>Combinations</h3>
+      <div id="guide-combos"></div>
+      <p class="guide-note">A stronger <em>category</em> always beats a weaker one — any flush beats
+        any straight. Within the same category, the higher combination wins.</p>
+
+      <button id="btn-guide-close" class="primary">Got it, let's play!</button>
+    </div>
+  </div>
+
+  <!-- Home screen -->
+  <section id="screen-home" class="screen">
+    <div class="panel">
+      <h1>🂡 Capsa Banting</h1>
+      <p class="subtitle">Big Two — multiplayer card game</p>
+      <label for="name-input">Your name</label>
+      <input id="name-input" maxlength="20" placeholder="e.g. Nico" autocomplete="off" />
+      <button id="btn-create" class="primary">Create Room</button>
+      <div class="join-row">
+        <input id="code-input" maxlength="4" placeholder="CODE" autocomplete="off" />
+        <button id="btn-join">Join Room</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Lobby screen -->
+  <section id="screen-lobby" class="screen hidden">
+    <div class="panel">
+      <h1>Lobby</h1>
+      <p class="subtitle">Room code: <span id="lobby-code" class="room-code"></span>
+        <button id="btn-copy" class="mini">Copy link</button></p>
+      <ul id="lobby-players" class="player-list"></ul>
+      <p id="lobby-hint" class="hint"></p>
+      <button id="btn-start" class="primary hidden">Start Game</button>
+      <button id="btn-leave" class="mini">Leave</button>
+    </div>
+  </section>
+
+  <!-- Game screen -->
+  <section id="screen-game" class="screen hidden">
+    <div class="table">
+      <div id="opponents" class="opponents"></div>
+      <div class="center">
+        <div id="pile" class="pile"></div>
+        <div id="turn-banner" class="turn-banner"></div>
+        <div class="timer-track"><div id="timer-bar"></div></div>
+      </div>
+      <div class="me">
+        <div id="hand" class="hand"></div>
+        <div class="actions">
+          <button id="btn-play" class="primary">Play</button>
+          <button id="btn-pass">Pass</button>
+          <button id="btn-sort" class="mini">Sort</button>
+        </div>
+      </div>
+    </div>
+    <div id="log" class="log"></div>
+  </section>
+
+  <!-- Finished overlay -->
+  <section id="screen-end" class="screen hidden">
+    <div class="panel">
+      <h1 id="end-title">Game Over</h1>
+      <ol id="standings" class="standings"></ol>
+      <button id="btn-rematch" class="primary hidden">Rematch</button>
+      <p class="hint" id="end-hint"></p>
+    </div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
