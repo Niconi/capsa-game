@@ -404,13 +404,19 @@ function renderGame() {
     div.className = "opp" + (p.seat === state.turnSeat ? " turn" : "") + (p.connected ? "" : " disconnected");
     if (p.left) div.classList.add("quit");
     const isTurn = p.seat === state.turnSeat && !p.left;
+    const doneAt = (state.finishedOrder || []).indexOf(p.name);
     const backs = Array.from({ length: Math.min(p.cardCount, 13) }, () => "<i></i>").join("");
     div.innerHTML = `
       <div class="avatar">${escapeHtml(p.name.charAt(0).toUpperCase())}</div>
       <div class="opp-name">${escapeHtml(p.name)}</div>
       <div class="mini-cards">${backs}<span class="mini-count">${p.cardCount}</span></div>
       ${isTurn ? '<div class="timer" data-live></div>' : ""}
-      <div class="opp-flag">${p.left ? "quit" : p.passed ? "passed" : ""}${!p.left && !p.connected ? " · offline" : ""}</div>`;
+      <div class="opp-flag">${
+        p.left ? "quit"
+        : doneAt >= 0 ? `🏁 out (${doneAt + 1}${["st", "nd", "rd", "th"][Math.min(doneAt, 3)]})`
+        : p.passed ? "passed"
+        : ""
+      }${!p.left && !p.connected ? " · offline" : ""}</div>`;
     opp.appendChild(div);
   }
 
@@ -469,7 +475,19 @@ function renderEnd() {
     throwConfetti();
   }
   const myName = state.players.find((p) => p.seat === state.youSeat)?.name;
-  $("end-title").textContent = myName && state.standings[0] === myName ? "🏆 You Win!" : "Game Over";
+  const myEntry = myName
+    ? state.standings.find((s) => s === myName || s.startsWith(`${myName} (`))
+    : undefined;
+  const title =
+    myName && state.standings[0] === myName ? "🏆 You Win!"
+    : myEntry?.includes("(quit)") ? "🚪 You Quit"
+    : myEntry ? "😵 You Lose"
+    : "Game Over";
+  $("end-title").textContent = title;
+  $("end-sub").textContent =
+    title === "🏆 You Win!" ? "You played out first."
+    : title === "😵 You Lose" ? "You were the last one holding cards."
+    : "";
   const ol = $("standings");
   ol.innerHTML = "";
   state.standings.forEach((name) => {
