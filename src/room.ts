@@ -8,7 +8,7 @@ interface Player {
   seat: number;
   hand: number[];
   connected: boolean;
-  passed: boolean;
+  passed: boolean; // passed on the current trick — sits out until the trick is won
   left: boolean; // quit mid-game: seat stays (indexes must hold) but they are skipped
 }
 
@@ -20,7 +20,7 @@ interface RoomState {
   turnSeat: number;
   pile: { combo: Combo; seat: number } | null;
   requiredCard: number | null; // the first play of a game must include this card
-  standings: string[]; // player names in finishing order
+  standings: string[]; // players in the order they emptied their hand (plain names while playing)
   log: string[];
   turnDeadline: number | null; // epoch ms; current player auto-moves at this time
 }
@@ -233,11 +233,22 @@ export class GameRoom extends DurableObject<Env> {
     player.hand = player.hand.filter((c) => !cards.includes(c));
     this.state.requiredCard = null;
     this.state.pile = { combo, seat: player.seat };
-    this.state.players.forEach((p) => (p.passed = false));
+    // Passes are NOT cleared here: a player who passed sits out the rest of the
+    // trick, otherwise they could jump back in as soon as someone else plays.
+    // advanceTurn() clears the flags when the trick is won.
     this.state.log.push(`${player.name} played ${combo.cards.map(cardName).join(" ")}`);
 
     if (player.hand.length === 0) {
-      await this.finishGame(player);
+      // Out of cards — out of the game. The rest keep playing for places, and
+      // whoever is still holding cards when the dust settles loses.
+      this.state.standings.push(player.name);
+      this.state.log.push(
+        `✅ ${player.name} finished — ${ordinal(this.state.standings.length)} out`,
+      );
+    }
+
+    if (this.playersInPlay().length <= 1) {
+      await this.finishGame();
     } else {
       this.advanceTurn();
       await this.armTurnTimer();
@@ -300,9 +311,8 @@ export class GameRoom extends DurableObject<Env> {
       player.hand = [];
       this.state.log.push(`🚪 ${player.name} quit the game`);
 
-      const remaining = this.state.players.filter((p) => !p.left);
-      if (remaining.length === 1) {
-        await this.finishGame(remaining[0]);
+      if (this.playersInPlay().length <= 1) {
+        await this.finishGame();
       } else if (this.state.players[this.state.turnSeat]?.id === player.id) {
         this.advanceTurn();
         await this.armTurnTimer();
@@ -324,9 +334,11 @@ export class GameRoom extends DurableObject<Env> {
     const s = this.state;
     if (s.phase !== "playing" || s.turnDeadline === null || Date.now() < s.turnDeadline) return;
     const player = s.players[s.turnSeat];
-    if (!player) return;
-    if (player.left) {
-      this.advanceTurn();
+    if (!player || !this.inPlay(player)) {
+      // Whoever is on the clock already left or went out — hand it to the next live seat.
+      const next = this.seatInPlayAfter(s.turnSeat);
+      if (next === null) return;
+      s.turnSeat = next;
       await this.armTurnTimer();
       await this.save();
       this.broadcast();
@@ -344,49 +356,89 @@ export class GameRoom extends DurableObject<Env> {
 
   // ---- Game flow helpers ----
 
+  /** A player is still in the game while they hold cards and haven't quit. */
+  private inPlay(p: Player): boolean {
+    return !p.left && p.hand.length > 0;
+  }
+
+  private playersInPlay(): Player[] {
+    return this.state.players.filter((p) => this.inPlay(p));
+  }
+
+  /** Next seat after `from` whose player is still holding cards, or null. */
+  private seatInPlayAfter(from: number): number | null {
+    const n = this.state.players.length;
+    for (let i = 1; i <= n; i++) {
+      const idx = (from + i) % n;
+      if (this.inPlay(this.state.players[idx])) return idx;
+    }
+    return null;
+  }
+
   private advanceTurn() {
     const s = this.state;
     const n = s.players.length;
-    let next = s.turnSeat;
-    let found = false;
-    for (let i = 0; i < n; i++) {
-      next = (next + 1) % n;
-      const p = s.players[next];
-      if (!p.passed && !p.left) {
-        found = true;
+    // Next seat that still holds cards and hasn't passed on this trick.
+    let next: number | null = null;
+    for (let i = 1; i <= n; i++) {
+      const idx = (s.turnSeat + i) % n;
+      const p = s.players[idx];
+      if (this.inPlay(p) && !p.passed) {
+        next = idx;
         break;
       }
     }
-    // Trick is won when play comes back to the pile owner — or when nobody
-    // eligible remains (the owner quit and everyone else has passed).
-    if (s.pile && (next === s.pile.seat || !found)) {
+
+    // The trick is won when play comes back around to the player who set the
+    // pile — or when nobody still able to beat it is left (everyone else passed
+    // or went out).
+    if (s.pile && (next === null || next === s.pile.seat)) {
       const ownerSeat = s.pile.seat;
       const owner = s.players[ownerSeat];
       s.pile = null;
       s.players.forEach((p) => (p.passed = false));
-      next = ownerSeat;
-      for (let i = 0; i < n && s.players[next].left; i++) next = (next + 1) % n;
-      s.log.push(
-        owner.left
-          ? `${s.players[next].name} leads the next trick`
-          : `${owner.name} won the trick and leads`,
-      );
+      next = this.inPlay(owner) ? ownerSeat : this.seatInPlayAfter(ownerSeat);
+      if (next !== null) {
+        s.log.push(
+          this.inPlay(owner)
+            ? `${owner.name} won the trick and leads`
+            : `${s.players[next].name} leads the next trick`,
+        );
+      }
     }
+
+    // Nobody can act (everyone else is out): fall back to whoever still holds cards.
+    if (next === null) next = this.seatInPlayAfter(s.turnSeat);
+    if (next === null) return; // game over — finishGame() decides the loser
     s.turnSeat = next;
   }
 
-  private async finishGame(winner: Player) {
-    this.state.phase = "finished";
-    this.state.turnDeadline = null;
+  private async finishGame() {
+    const s = this.state;
+    s.phase = "finished";
+    s.turnDeadline = null;
+    s.pile = null;
     await this.ctx.storage.deleteAlarm();
-    const others = this.state.players
-      .filter((p) => p.id !== winner.id)
-      .sort((a, b) => Number(a.left) - Number(b.left) || a.hand.length - b.hand.length);
-    this.state.standings = [
-      winner.name,
-      ...others.map((p) => (p.left ? `${p.name} (quit)` : `${p.name} (${p.hand.length} left)`)),
-    ];
-    this.state.log.push(`🏆 ${winner.name} wins!`);
+
+    const finishers = [...s.standings]; // who went out, in order (winner is [0])
+    const inPlay = this.playersInPlay();
+    const quitters = s.players.filter((p) => p.left);
+    const tail: string[] = [];
+
+    if (inPlay.length === 1) {
+      const last = inPlay[0];
+      if (finishers.length === 0) {
+        // Everyone else quit: the one still at the table takes the win.
+        finishers.push(last.name);
+      } else {
+        // Last player left holding cards is the loser of this round.
+        tail.push(`${last.name} (${last.hand.length} left)`);
+        s.log.push(`❌ ${last.name} left holding ${last.hand.length} card(s)`);
+      }
+    }
+
+    s.standings = [...finishers, ...tail, ...quitters.map((p) => `${p.name} (quit)`)];
+    if (finishers.length > 0) s.log.push(`🏆 ${finishers[0]} wins!`);
   }
 
   private reseat() {
@@ -455,6 +507,8 @@ export class GameRoom extends DurableObject<Env> {
           isHost: p.id === s.hostId,
         })),
         standings: s.standings,
+        // During play: names of the players who already went out, in order.
+        finishedOrder: s.phase === "playing" ? [...s.standings] : [],
         log: s.log.slice(-30),
       };
       try {
@@ -462,6 +516,11 @@ export class GameRoom extends DurableObject<Env> {
       } catch {}
     }
   }
+}
+
+function ordinal(n: number): string {
+  const suffix = n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] ?? "th";
+  return `${n}${suffix}`;
 }
 
 function sanitizeName(raw: string): string {
