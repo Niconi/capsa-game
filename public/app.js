@@ -352,7 +352,7 @@ function throwConfetti() {
 }
 
 // ---- Turn countdown ----
-const TURN_MS = 30000; // keep in sync with the server
+const TURN_MS = 30000; // fallback when the server doesn't send a turn length
 let lastTickSecond = null;
 setInterval(() => {
   if (!state || state.phase !== "playing" || state.turnDeadline == null) return;
@@ -363,7 +363,7 @@ setInterval(() => {
     el.classList.toggle("low", remain <= 10);
   }
   const bar = $("timer-bar");
-  bar.style.width = `${(remainMs / TURN_MS) * 100}%`;
+  bar.style.width = `${Math.min(100, (remainMs / (state.turnMs || TURN_MS)) * 100)}%`;
   bar.classList.toggle("low", remain <= 10);
   // Soft tick in the last 5 seconds of MY turn
   if (state.turnSeat === state.youSeat && remain <= 5 && remain > 0 && remain !== lastTickSecond) {
@@ -380,15 +380,33 @@ function renderLobby() {
   list.innerHTML = "";
   for (const p of state.players) {
     const li = document.createElement("li");
+    const pts = state.scores?.[p.name] ?? 0;
     li.innerHTML = `<span>${escapeHtml(p.name)}${p.seat === state.youSeat ? " (you)" : ""}</span>
-      <span>${p.isHost ? "👑 host" : ""}${p.connected ? "" : " ⚠️ offline"}</span>`;
+      <span>${p.isHost ? "👑 host" : ""}${pts > 0 ? ` · ${pts} pt` : ""}${p.connected ? "" : " ⚠️ offline"}</span>`;
     list.appendChild(li);
   }
+  const scored = scoreRows().filter((r) => r.points > 0);
+  const box = $("lobby-scores");
+  box.classList.toggle("hidden", scored.length === 0);
+  box.textContent = scored.length === 0
+    ? ""
+    : `After ${state.rounds} round${state.rounds === 1 ? "" : "s"}: ${scored
+        .map((r) => `${r.name} ${r.points}`)
+        .join(" · ")}`;
   $("btn-start").classList.toggle("hidden", !state.isHost);
   $("btn-start").disabled = state.players.length < 2;
   $("lobby-hint").textContent = state.isHost
     ? (state.players.length < 2 ? "Waiting for players… (2–4 can play)" : "Ready when you are!")
     : "Waiting for the host to start…";
+}
+
+/** Running points, best (fewest) first. */
+function scoreRows() {
+  const inRoom = state.players.map((p) => p.name);
+  const gone = Object.keys(state.scores ?? {}).filter((n) => !inRoom.includes(n));
+  return [...inRoom, ...gone]
+    .map((name) => ({ name, points: state.scores?.[name] ?? 0 }))
+    .sort((a, b) => a.points - b.points || a.name.localeCompare(b.name));
 }
 
 function renderGame() {
@@ -443,7 +461,7 @@ function renderGame() {
       : "Your turn";
   } else {
     const cur = state.players.find((p) => p.seat === state.turnSeat);
-    bannerText = `Waiting for ${cur ? cur.name : "…"}`;
+    bannerText = `Waiting for ${cur ? cur.name : "…"}${cur && !cur.connected ? " (offline)" : ""}`;
   }
   banner.innerHTML = `${escapeHtml(bannerText)} <span class="timer" data-live></span>`;
 
@@ -495,6 +513,27 @@ function renderEnd() {
     li.textContent = name;
     ol.appendChild(li);
   });
+
+  // Points banked across the room's rounds (1 per card left in hand)
+  const rows = scoreRows();
+  const hasPoints = rows.some((r) => r.points > 0);
+  $("scoreboard").classList.toggle("hidden", !hasPoints);
+  $("score-rounds").textContent = state.rounds
+    ? `after ${state.rounds} round${state.rounds === 1 ? "" : "s"}`
+    : "";
+  const sl = $("scores");
+  sl.innerHTML = "";
+  if (hasPoints) {
+    const best = rows[0].points;
+    for (const r of rows) {
+      const li = document.createElement("li");
+      li.className = r.points === best ? "best" : "";
+      li.innerHTML = `<span>${escapeHtml(r.name)}</span><span>${r.points}${r.points === best ? " 👑" : ""}</span>`;
+      sl.appendChild(li);
+    }
+  }
+  $("btn-reset-scores").classList.toggle("hidden", !state.isHost);
+
   $("btn-rematch").classList.toggle("hidden", !state.isHost);
   $("end-hint").textContent = state.isHost ? "" : "Waiting for the host to start a rematch…";
 }
@@ -557,6 +596,10 @@ $("btn-quit").onclick = () => {
   leaveRoom();
 };
 $("btn-rematch").onclick = () => send({ type: "rematch" });
+$("btn-reset-scores").onclick = () => {
+  if (!window.confirm("Reset every point back to zero?")) return;
+  send({ type: "reset-scores" });
+};
 $("btn-pass").onclick = () => { selected.clear(); send({ type: "pass" }); };
 
 $("btn-play").onclick = () => {
