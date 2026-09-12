@@ -21,12 +21,16 @@ interface RoomState {
   pile: { combo: Combo; seat: number } | null;
   requiredCard: number | null; // the first play of a game must include this card
   standings: string[]; // players in the order they emptied their hand (plain names while playing)
+  scores: Record<string, number>; // penalty points per player name, carried across rounds
+  rounds: number; // rounds completed in this room
   log: string[];
   turnDeadline: number | null; // epoch ms; current player auto-moves at this time
+  turnMs: number | null; // length of the current turn (shorter for a disconnected player)
 }
 
 const MAX_PLAYERS = 4;
 const TURN_MS = 30_000;
+const TURN_MS_OFFLINE = 8_000; // a player who dropped off doesn't hold up the table
 
 function freshState(): RoomState {
   return {
@@ -38,8 +42,11 @@ function freshState(): RoomState {
     pile: null,
     requiredCard: null,
     standings: [],
+    scores: {},
+    rounds: 0,
     log: [],
     turnDeadline: null,
+    turnMs: null,
   };
 }
 
@@ -51,7 +58,9 @@ export class GameRoom extends DurableObject<Env> {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
       const saved = await ctx.storage.get<RoomState>("state");
-      if (saved) this.state = saved;
+      // Spread over a fresh state so a room stored by an older build picks up
+      // any fields added since (scores, rounds, …) instead of seeing undefined.
+      if (saved) this.state = { ...freshState(), ...saved };
       this.loaded = true;
     });
   }
@@ -108,6 +117,9 @@ export class GameRoom extends DurableObject<Env> {
         case "rematch":
           await this.handleRematch(ws);
           break;
+        case "reset-scores":
+          await this.handleResetScores(ws);
+          break;
         case "quit":
           await this.handleQuit(ws);
           break;
@@ -121,11 +133,17 @@ export class GameRoom extends DurableObject<Env> {
     const player = this.playerOf(ws);
     if (player) {
       player.connected = this.socketsOf(player.id).length > 1;
-      if (!player.connected && this.state.phase === "lobby" && player.id !== this.state.hostId) {
-        // In the lobby, departing non-host players free up their seat.
-        this.state.players = this.state.players.filter((p) => p.id !== player.id);
-        this.reseat();
-        this.state.log.push(`${player.name} left`);
+      if (!player.connected) {
+        // The host walked off: hand the room to whoever is still here, otherwise
+        // nobody can start a game and the room is dead until they come back.
+        if (player.id === this.state.hostId) this.reassignHost();
+        // A departing non-host frees up their seat in the lobby (the old host is
+        // a non-host now if we just moved the crown).
+        if (this.state.phase === "lobby" && player.id !== this.state.hostId) {
+          this.state.players = this.state.players.filter((p) => p.id !== player.id);
+          this.reseat();
+          this.state.log.push(`${player.name} left`);
+        }
       }
       await this.save();
       this.broadcast();
@@ -143,6 +161,10 @@ export class GameRoom extends DurableObject<Env> {
       ws.serializeAttachment({ playerId: existing.id });
       existing.connected = true;
       if (msg.name && this.state.phase === "lobby") existing.name = sanitizeName(msg.name);
+      // Back before their clock ran out: give them a full turn again.
+      if (this.state.phase === "playing" && this.state.players[this.state.turnSeat]?.id === existing.id) {
+        await this.armTurnTimer();
+      }
       await this.save();
       this.broadcast();
       return;
@@ -197,7 +219,7 @@ export class GameRoom extends DurableObject<Env> {
     this.state.requiredCard = lowest;
     this.state.turnSeat = startSeat;
     this.state.log = [
-      `Game started — ${this.state.players[startSeat].name} leads with a combo containing ${cardName(lowest)}`,
+      `Round ${this.state.rounds + 1} — ${this.state.players[startSeat].name} leads with a combo containing ${cardName(lowest)}`,
     ];
     await this.armTurnTimer();
     await this.save();
@@ -287,8 +309,19 @@ export class GameRoom extends DurableObject<Env> {
     this.state.pile = null;
     this.state.standings = [];
     this.state.turnDeadline = null;
+    this.state.turnMs = null;
     await this.ctx.storage.deleteAlarm();
     this.state.log.push("Back to lobby for a rematch");
+    await this.save();
+    this.broadcast();
+  }
+
+  private async handleResetScores(ws: WebSocket) {
+    const player = this.requirePlayer(ws);
+    if (player.id !== this.state.hostId) throw new Error("Only the host can reset the points");
+    this.state.scores = {};
+    this.state.rounds = 0;
+    this.state.log.push("🧮 Points reset");
     await this.save();
     this.broadcast();
   }
@@ -308,8 +341,14 @@ export class GameRoom extends DurableObject<Env> {
       if (this.state.requiredCard !== null && player.hand.includes(this.state.requiredCard)) {
         this.state.requiredCard = null;
       }
+      const abandoned = player.hand.length;
       player.hand = [];
-      this.state.log.push(`🚪 ${player.name} quit the game`);
+      if (abandoned > 0) {
+        this.addPenalty(player.name, abandoned);
+        this.state.log.push(`🚪 ${player.name} quit with ${abandoned} card(s) left`);
+      } else {
+        this.state.log.push(`🚪 ${player.name} quit the game`);
+      }
 
       if (this.playersInPlay().length <= 1) {
         await this.finishGame();
@@ -325,7 +364,12 @@ export class GameRoom extends DurableObject<Env> {
   // ---- Turn timer ----
 
   private async armTurnTimer() {
-    this.state.turnDeadline = Date.now() + TURN_MS;
+    // A player who dropped off gets a much shorter clock so one broken
+    // connection can't stall the table for 30s every single turn.
+    const current = this.state.players[this.state.turnSeat];
+    const ms = current && !current.connected ? TURN_MS_OFFLINE : TURN_MS;
+    this.state.turnMs = ms;
+    this.state.turnDeadline = Date.now() + ms;
     await this.ctx.storage.setAlarm(this.state.turnDeadline);
   }
 
@@ -431,14 +475,32 @@ export class GameRoom extends DurableObject<Env> {
         // Everyone else quit: the one still at the table takes the win.
         finishers.push(last.name);
       } else {
-        // Last player left holding cards is the loser of this round.
+        // Last player left holding cards loses, and pays for every card left.
         tail.push(`${last.name} (${last.hand.length} left)`);
+        this.addPenalty(last.name, last.hand.length);
         s.log.push(`❌ ${last.name} left holding ${last.hand.length} card(s)`);
       }
     }
 
+    s.rounds += 1;
     s.standings = [...finishers, ...tail, ...quitters.map((p) => `${p.name} (quit)`)];
     if (finishers.length > 0) s.log.push(`🏆 ${finishers[0]} wins!`);
+  }
+
+  /** Capa scoring: every card still in hand when a round ends costs a point. */
+  private addPenalty(name: string, points: number) {
+    if (points <= 0) return;
+    this.state.scores[name] = (this.state.scores[name] ?? 0) + points;
+  }
+
+  /** Move the host crown to a connected player (or any other player). */
+  private reassignHost() {
+    const others = this.state.players.filter((p) => p.id !== this.state.hostId);
+    const next = others.find((p) => p.connected) ?? others[0];
+    if (!next) return; // nobody else is here — keep the crown where it is
+    const prev = this.state.players.find((p) => p.id === this.state.hostId);
+    this.state.hostId = next.id;
+    this.state.log.push(`👑 ${next.name} is now the host${prev ? ` — ${prev.name} disconnected` : ""}`);
   }
 
   private reseat() {
@@ -495,6 +557,7 @@ export class GameRoom extends DurableObject<Env> {
         hand: me?.hand ?? [],
         turnSeat: s.turnSeat,
         turnDeadline: s.turnDeadline,
+        turnMs: s.turnMs,
         requiredCard: s.requiredCard,
         pile: s.pile ? { cards: s.pile.combo.cards, kind: s.pile.combo.kind, seat: s.pile.seat } : null,
         players: s.players.map((p) => ({
@@ -509,6 +572,8 @@ export class GameRoom extends DurableObject<Env> {
         standings: s.standings,
         // During play: names of the players who already went out, in order.
         finishedOrder: s.phase === "playing" ? [...s.standings] : [],
+        scores: s.scores,
+        rounds: s.rounds,
         log: s.log.slice(-30),
       };
       try {

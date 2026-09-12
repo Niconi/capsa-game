@@ -22,13 +22,13 @@
 
       <div class="guide-facts">
         <div class="fact"><span class="fact-icon">🎯</span>
-          <div><b>Goal</b><span>Play out all 13 of your cards first. Whoever is still holding cards when everyone else is out loses.</span></div></div>
+          <div><b>Goal</b><span>Play out all 13 of your cards first. Whoever is still holding cards when everyone else is out loses, and every card left costs a point that follows you across rounds.</span></div></div>
         <div class="fact"><span class="fact-icon">🃏</span>
           <div><b>Your turn</b><span>Beat the pile with the <em>same number of cards</em> — or pass. A pass sits you out for the rest of that trick; when everyone else passes, the last player to play leads anything.</span></div></div>
         <div class="fact"><span class="fact-icon">🥇</span>
           <div><b>First move</b><span>The very first play must include the lowest dealt card.</span></div></div>
         <div class="fact"><span class="fact-icon">⏱️</span>
-          <div><b>Timer</b><span>30 seconds per turn — then you auto-pass, or auto-play your lowest card when leading.</span></div></div>
+          <div><b>Timer</b><span>30 seconds per turn — then you auto-pass, or auto-play your lowest card when leading. A player who drops off gets 8 seconds until they reconnect.</span></div></div>
       </div>
 
       <h3>Card ranking</h3>
@@ -66,6 +66,7 @@
       <p class="subtitle">Room code: <span id="lobby-code" class="room-code"></span>
         <button id="btn-copy" class="mini">Copy link</button></p>
       <ul id="lobby-players" class="player-list"></ul>
+      <div id="lobby-scores" class="lobby-scores hidden"></div>
       <p id="lobby-hint" class="hint"></p>
       <button id="btn-start" class="primary hidden">Start Game</button>
       <button id="btn-leave" class="mini">Leave</button>
@@ -99,7 +100,13 @@
       <h1 id="end-title">Game Over</h1>
       <p class="subtitle" id="end-sub"></p>
       <ol id="standings" class="standings"></ol>
+      <div id="scoreboard" class="scoreboard hidden">
+        <h3>Points <span id="score-rounds" class="score-sub"></span></h3>
+        <ol id="scores" class="scores"></ol>
+        <p class="score-note">1 point for every card still in hand when a round ends — lowest total wins.</p>
+      </div>
       <button id="btn-rematch" class="primary hidden">Rematch</button>
+      <button id="btn-reset-scores" class="mini hidden">Reset points</button>
       <p class="hint" id="end-hint"></p>
     </div>
   </section>
